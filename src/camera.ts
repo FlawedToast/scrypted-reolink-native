@@ -364,12 +364,6 @@ export class ReolinkCamera
       defaultValue: 20,
       type: "number",
     },
-    cachedOsd: {
-      multiple: true,
-      hide: true,
-      json: true,
-      defaultValue: [],
-    },
     // PTZ Presets
     presets: {
       group: "PTZ",
@@ -2243,6 +2237,7 @@ export class ReolinkCamera
         hasAutotracking: false,
         isDoorbell: false,
         hasWirelessChime: false,
+        hasPowerSourceSwitch: false,
       };
     }
   }
@@ -2682,19 +2677,17 @@ export class ReolinkCamera
     const client = await this.ensureClient();
     const channel = this.storageSettings.values.rtspChannel;
 
-    let osd = this.storageSettings.values.cachedOsd;
-
-    if (!osd?.length) {
-      osd = await client.getOsd(channel);
-      this.storageSettings.values.cachedOsd = osd;
-    }
+    // No cache here on purpose. `cachedOsd` used to guard this call but the
+    // guard read `osd?.length` on an object, so it never once hit; keeping it
+    // across the 0.7 shape change would only risk serving a 0.6-shaped blob.
+    const osd = await client.getOsd(channel);
 
     return {
       osdChannel: {
-        text: osd?.osdChannel?.enable ? osd.osdChannel.name : undefined,
+        text: osd?.channelName?.enable ? (osd.channelName.name ?? undefined) : undefined,
       },
       osdTime: {
-        text: !!osd?.osdTime?.enable,
+        text: !!osd?.datetime?.enable,
         readonly: true,
       },
     };
@@ -2707,24 +2700,24 @@ export class ReolinkCamera
     const client = await this.ensureClient();
     const channel = this.storageSettings.values.rtspChannel;
 
-    const osd = await client.getOsd(channel);
-
     if (id === "osdChannel") {
       const nextName = typeof value?.text === "string" ? value.text.trim() : "";
       const enable = !!nextName || value?.text === true;
-      osd.osdChannel.enable = enable ? 1 : 0;
-      // Name must always be valid when enabled.
-      if (enable) {
-        osd.osdChannel.name =
-          nextName || osd.osdChannel.name || this.name || "Camera";
-      }
+      // Name must always be valid when enabled, so read the current one first.
+      const current = enable ? await client.getOsd(channel) : undefined;
+      await client.setOsd(channel, {
+        channelName: {
+          enable,
+          ...(enable && {
+            name: nextName || current?.channelName?.name || this.name || "Camera",
+          }),
+        },
+      });
     } else if (id === "osdTime") {
-      osd.osdTime.enable = value?.text ? 1 : 0;
+      await client.setOsd(channel, { datetime: { enable: !!value?.text } });
     } else {
       throw new Error("unknown overlay: " + id);
     }
-
-    await client.setOsd(channel, osd);
   }
 
   // PanTiltZoom interface implementation
