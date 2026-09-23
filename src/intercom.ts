@@ -32,12 +32,94 @@ export interface IntercomHost {
   readonly blocksPerPayload: number;
   readonly outputGain: number;
   readonly maxBacklogMs: number;
+  /**
+   * TalkConfig audioStreamMode to request instead of the camera's advertised
+   * default. Undefined keeps the library's choice (the first advertised mode).
+   */
+  readonly audioStreamMode?: TalkAudioStreamMode;
   readonly channel: number;
   readonly isBatteryCamera: boolean;
   readonly deviceId: string;
   readonly logger: Console;
   ensureApi(): Promise<ReolinkBaichuanApi>;
   withRetry<T>(fn: () => Promise<T>): Promise<T>;
+}
+
+export type TalkAudioStreamMode = "followVideoStream" | "mixAudioStream";
+
+/**
+ * Run `fn` with the camera's TalkAbility rewritten so `mode` is the preferred
+ * audioStreamMode, then restore the API.
+ *
+ * nodelink-js builds TalkConfig from the first advertised mode, and battery
+ * doorbells advertise only `followVideoStream`. In that mode the doorbell sends
+ * exact digital silence for its microphone for as long as the talk session is
+ * open — the visitor cannot be heard at all while you talk. The same doorbell
+ * accepts `mixAudioStream`, keeps its microphone live, and mixes the talk audio
+ * into its own stream, which is the full-duplex behaviour of Reolink's app.
+ *
+ * `getTalkAbilityWithClient` is private in the library's typings but is what
+ * `createDedicatedTalkSession` calls, so it is overridden on this instance only
+ * for the duration of the call.
+ */
+export async function withTalkAudioStreamMode<T>(
+  api: ReolinkBaichuanApi,
+  mode: TalkAudioStreamMode | undefined,
+  logger: Console,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!mode) return await fn();
+
+  const target = api as any;
+  const original = target.getTalkAbilityWithClient;
+  if (typeof original !== "function") {
+    logger.warn(
+      `Intercom: cannot request audioStreamMode=${mode} with this nodelink-js version, using the camera default`,
+    );
+    return await fn();
+  }
+
+  const hadOwn = Object.prototype.hasOwnProperty.call(
+    target,
+    "getTalkAbilityWithClient",
+  );
+  target.getTalkAbilityWithClient = async (...args: unknown[]) => {
+    const ability = await original.apply(target, args);
+    const advertised: string[] = ability?.audioStreamModeList ?? [];
+    logger.log(
+      `Intercom: requesting audioStreamMode=${mode} (camera advertises ${JSON.stringify(advertised)})`,
+    );
+    return {
+      ...ability,
+      audioStreamModeList: [mode, ...advertised.filter((m) => m !== mode)],
+    };
+  };
+  try {
+    return await fn();
+  } finally {
+    if (hadOwn) target.getTalkAbilityWithClient = original;
+    else delete target.getTalkAbilityWithClient;
+  }
+}
+
+/** Choices for the "Talk Mode" setting, shared by the camera and the intercom mixin. */
+export const TALK_MODE_DEFAULT = "Camera default";
+export const TALK_MODE_FULL_DUPLEX = "Full duplex (mixAudioStream)";
+export const talkModeSetting = {
+  group: "Intercom",
+  title: "Talk Mode",
+  description:
+    "Camera default: the camera's advertised mode. On battery doorbells this mutes the doorbell's microphone while talking. " +
+    "Full duplex: keeps the microphone live so you can hear the visitor while talking (the doorbell also mixes your voice into its audio). " +
+    "Requires restarting talk session to take effect.",
+  type: "string" as const,
+  choices: [TALK_MODE_DEFAULT, TALK_MODE_FULL_DUPLEX],
+  defaultValue: TALK_MODE_DEFAULT,
+};
+export function parseTalkModeSetting(
+  value: unknown,
+): TalkAudioStreamMode | undefined {
+  return value === TALK_MODE_FULL_DUPLEX ? "mixAudioStream" : undefined;
 }
 
 // Keep this low: Reolink blocks are ~64ms at 16kHz (1025 samples).
@@ -237,12 +319,18 @@ export class ReolinkBaichuanIntercom {
       // with auto-teardown on idle or when stop() is called
       const blocksPerPayload = this.host.blocksPerPayload;
       const session = await this.host.withRetry(async () => {
-        return await api.createDedicatedTalkSession(channel, {
-          blocksPerPayload,
-          idleTimeoutMs: 30000, // Auto-teardown if no audio for 30s
-          deviceId: this.host.deviceId,
+        return await withTalkAudioStreamMode(
+          api,
+          this.host.audioStreamMode,
           logger,
-        });
+          () =>
+            api.createDedicatedTalkSession(channel, {
+              blocksPerPayload,
+              idleTimeoutMs: 30000, // Auto-teardown if no audio for 30s
+              deviceId: this.host.deviceId,
+              logger,
+            }),
+        );
       });
 
       this.session = session;

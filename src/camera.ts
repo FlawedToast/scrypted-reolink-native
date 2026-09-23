@@ -103,7 +103,12 @@ import {
   getDebugLogChoices,
 } from "./debug-options";
 import { EMAIL_PUSH_SERVER_NATIVE_ID } from "./email-push-server-device";
-import { ReolinkBaichuanIntercom, type IntercomHost } from "./intercom";
+import {
+  parseTalkModeSetting,
+  ReolinkBaichuanIntercom,
+  talkModeSetting,
+  type IntercomHost,
+} from "./intercom";
 import ReolinkNativePlugin from "./main";
 import { ReolinkNativeMultiFocalDevice } from "./multifocal";
 import { ReolinkNativeNvrDevice } from "./nvr";
@@ -266,6 +271,10 @@ export class ReolinkCamera
         "Output gain multiplier applied before encoding. 1.0 = normal, 2.0 ≈ +6dB, 0.5 ≈ -6dB. Requires restarting talk session to take effect.",
       type: "number",
       defaultValue: 1.0,
+      hide: true,
+    },
+    intercomAudioStreamMode: {
+      ...talkModeSetting,
       hide: true,
     },
     keyframeTimeoutMs: {
@@ -4156,6 +4165,11 @@ export class ReolinkCamera
           120,
         );
       },
+      get audioStreamMode() {
+        return parseTalkModeSetting(
+          self.storageSettings.values.intercomAudioStreamMode,
+        );
+      },
       get channel() {
         return self.storageSettings.values.rtspChannel;
       },
@@ -4242,6 +4256,7 @@ export class ReolinkCamera
       this.storageSettings.settings.intercomBlocksPerPayload.hide = hideIntercom;
       this.storageSettings.settings.intercomMaxBacklogMs.hide = hideIntercom;
       this.storageSettings.settings.intercomGain.hide = hideIntercom;
+      this.storageSettings.settings.intercomAudioStreamMode.hide = hideIntercom;
 
       try {
         const { interfaces, type } = getDeviceInterfaces({
