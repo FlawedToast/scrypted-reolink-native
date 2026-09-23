@@ -146,6 +146,12 @@ export class ReolinkBaichuanIntercom {
   private ffmpeg: ChildProcessWithoutNullStreams | undefined;
   private stopping: Promise<void> | undefined;
   private loggedCodecInfo = false;
+  /**
+   * Releases the permit that keeps the main Baichuan socket from idle
+   * disconnecting while talk is active. Battery cameras drop back to sleep
+   * ~30s after the last activity, which would end talk mid-sentence.
+   */
+  private releaseKeepAlive: (() => void) | undefined;
 
   private maxBacklogMs = DEFAULT_MAX_BACKLOG_MS;
   private maxBacklogBytes: number | undefined;
@@ -240,6 +246,17 @@ export class ReolinkBaichuanIntercom {
       });
 
       this.session = session;
+
+      try {
+        // 0 = hold until released; stop() releases it.
+        this.releaseKeepAlive = api.client.acquirePermit(0, "intercom");
+      } catch (e) {
+        logger.warn(
+          "Intercom: could not hold the connection open, the camera may idle out mid-talk",
+          e?.message || String(e),
+        );
+      }
+
       this.resetPcmQueue();
       this.lastBacklogClampLogAtMs = 0;
       this.droppedBytesSinceLog = 0;
@@ -508,6 +525,9 @@ export class ReolinkBaichuanIntercom {
       const session = this.session;
       this.session = undefined;
 
+      const releaseKeepAlive = this.releaseKeepAlive;
+      this.releaseKeepAlive = undefined;
+
       this.resetPcmQueue();
 
       const sleepMs = async (ms: number) =>
@@ -549,6 +569,18 @@ export class ReolinkBaichuanIntercom {
         } catch (e) {
           logger.warn("Intercom session stop error", e?.message || String(e));
         }
+      }
+
+      try {
+        releaseKeepAlive?.();
+      } catch {
+        // ignore
+      }
+
+      if (session || ffmpeg) {
+        logger.log("Intercom stopped", {
+          adpcmPayloadsSentToCamera: this.payloadsSent,
+        });
       }
     })().finally(() => {
       this.stopping = undefined;
@@ -691,7 +723,11 @@ export class ReolinkBaichuanIntercom {
 
           const adpcmChunk = encode(pcmSamples, blockSize);
           await session.sendAudio(adpcmChunk);
-          this.payloadsSent++;
+          if (this.payloadsSent++ === 0) {
+            logger.log(
+              `Intercom: first audio chunk sent to camera (${adpcmChunk.length} bytes ADPCM)`,
+            );
+          }
         }
       } catch (e) {
         logger.warn(
