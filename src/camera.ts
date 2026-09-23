@@ -103,7 +103,7 @@ import {
 } from "./debug-options";
 import { EMAIL_PUSH_SERVER_NATIVE_ID } from "./email-push-server-device";
 import ReolinkNativePlugin from "./main";
-import { ReolinkNativeMultiFocalDevice } from "./multiFocal";
+import { ReolinkNativeMultiFocalDevice } from "./multifocal";
 import { ReolinkNativeNvrDevice } from "./nvr";
 import { ReolinkPtzPresets } from "./presets";
 import {
